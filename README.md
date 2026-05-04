@@ -8,6 +8,7 @@ AI-powered assistant for hotel "У Михалича" built with Python and Groq 
 - Provides information about hotel services
 - Detects intent and structures responses as JSON
 - Escalates complex requests to human staff
+- Remembers conversation history per user
 
 ## Rooms & Pricing
 
