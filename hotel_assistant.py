@@ -2,13 +2,9 @@ import requests
 import json
 
 API_KEY = "твій_ключ_сюди"
+TG_TOKEN = "ТГ-токен"
 
-url = "https://api.groq.com/openai/v1/chat/completions"
-
-headers = {
-    "Authorization": f"Bearer {API_KEY}",
-    "Content-Type": "application/json"
-}
+TG_URL = f"https://api.telegram.org/bot{TG_TOKEN}"
 
 system_prompt = """
 Ти асистент готелю "У Михалича". Відповідай ввічливо і професійно українською мовою.
@@ -20,6 +16,11 @@ system_prompt = """
 
 Послуги готелю: ресторан, кафе, паркінг, басейн, сауна, спортзал, Wi-Fi.
 
+ВАЖЛИВО: Ти знаєш ТІЛЬКИ ту інформацію що написана вище. 
+Якщо гість питає про щось чого немає в цьому описі — наприклад ціни на їжу, 
+меню, вартість додаткових послуг — відповідай що ця інформація уточнюється 
+у менеджера і встановлюй needs_human: true.
+Ніколи не вигадуй ціни або інформацію якої немає в описі.
 Завжди повертай відповідь ТІЛЬКИ у форматі JSON і нічого більше:
 {
   "intent": "тип запиту",
@@ -31,28 +32,75 @@ system_prompt = """
 needs_human встановлюй true якщо запит складний або незрозумілий.
 """
 
-def ask_hotel(question):
-    body = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": question}
-        ]
-    }
+# Словник де ключ - chat_id, значення - історія повідомлень
+chat_histories = {}
 
-    response = requests.post(url, headers=headers, json=body)
+def ask_hotel(chat_id, question):
+    # Якщо цей користувач пише вперше - створюємо порожню історію
+    if chat_id not in chat_histories:
+        chat_histories[chat_id] = []
 
-    if response.ok:
-        data = response.json()
-        answer = data["choices"][0]["message"]["content"]
-        parsed = json.loads(answer)
-        print(f"Intent: {parsed['intent']}")
-        print(f"Response: {parsed['response']}")
-        print(f"Needs human: {parsed['needs_human']}")
-        print("---")
-    else:
-        print(f"Помилка: {response.status_code}", response.text)
+    # Додаємо нове повідомлення в історію
+    chat_histories[chat_id].append({
+        "role": "user",
+        "content": question
+    })
 
-ask_hotel("Скільки коштує люкс на двох?")
-ask_hotel("Чи є у вас басейн?")
-ask_hotel("Хочу поскаржитись на сусідів")
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {GROQ_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "model": "llama-3.3-70b-versatile",
+            "messages": [
+                {"role": "system", "content": system_prompt}
+            ] + chat_histories[chat_id]  # додаємо всю історію
+        }
+    )
+
+    data = response.json()
+    answer = data["choices"][0]["message"]["content"]
+    parsed = json.loads(answer)
+
+    # Додаємо відповідь бота теж в історію
+    chat_histories[chat_id].append({
+        "role": "assistant",
+        "content": answer
+    })
+
+    return parsed
+
+def send_message(chat_id, text):
+    requests.post(f"{TG_URL}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": text
+    })
+
+def get_updates(offset=None):
+    params = {"timeout": 30}
+    if offset:
+        params["offset"] = offset
+    response = requests.get(f"{TG_URL}/getUpdates", params=params)
+    return response.json()
+
+print("Бот запущено...")
+
+offset = None
+while True:
+    updates = get_updates(offset)
+    for update in updates.get("result", []):
+        offset = update["update_id"] + 1
+        message = update.get("message", {})
+        chat_id = message.get("chat", {}).get("id")
+        text = message.get("text", "")
+
+        if text:
+            print(f"Запит від {chat_id}: {text}")
+            result = ask_hotel(chat_id, text)
+            response_text = result["response"]
+            if result["needs_human"]:
+                response_text += "\n\n⚠️ Ваш запит передано менеджеру."
+            send_message(chat_id, response_text)
+            print(f"Відповідь: {response_text}")
